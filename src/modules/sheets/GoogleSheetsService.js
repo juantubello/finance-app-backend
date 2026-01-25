@@ -1,11 +1,4 @@
 import { google } from 'googleapis';
-import dotenv from 'dotenv';
-import path from 'path';
-import { existsSync } from 'fs';
-
-// Cargar .env: en Docker está montado en /app/.env; localmente en .env
-const envPath = existsSync('/app/.env') ? '/app/.env' : path.resolve(process.cwd(), '.env');
-dotenv.config({ path: envPath });
 
 class GoogleSheetsService {
   constructor() {
