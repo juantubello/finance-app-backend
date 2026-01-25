@@ -1,0 +1,25 @@
+{
+  "name": "finance-app-backend",
+  "version": "1.0.0",
+  "description": "Backend Node.js para aplicación de finanzas con SQLite",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "finance",
+    "backend",
+    "sqlite"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "googleapis": "^170.1.0",
+    "pdf-parse": "^1.1.4",
+    "sqlite3": "^5.1.7"
+  }
+}

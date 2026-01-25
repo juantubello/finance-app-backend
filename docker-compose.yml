@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: finance-backend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_PATH=/app/data/finance.db
+    volumes:
+      - ./data:/app/data
+      - ./resumes:/app/resumes
+      # Volumen para desarrollo (comentar en producción)
+      # - ./src:/app/src
+    env_file:
+      - .env
+    restart: unless-stopped
