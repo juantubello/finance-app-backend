@@ -80,9 +80,10 @@ function limpiarDescripcion(descripcion) {
  * @param {string} texto - Texto completo del PDF
  * @param {string} nombreSeccion - Nombre de la sección a buscar
  * @param {string} totalMatchString - String que indica el final de la sección
+ * @param {string} otroTotalMatchString - String que indica el total de la otra sección (para evitar duplicados)
  * @returns {Object} { detalles, total }
  */
-function extraerConsumosConTotal(texto, nombreSeccion, totalMatchString) {
+function extraerConsumosConTotal(texto, nombreSeccion, totalMatchString, otroTotalMatchString = null) {
   const detalles = [];
   // Patrón más flexible: fecha al inicio, descripción en medio, importe al final
   // Puede tener múltiples espacios o estar en formato de columnas
@@ -90,9 +91,22 @@ function extraerConsumosConTotal(texto, nombreSeccion, totalMatchString) {
   let dentroDeSeccion = false;
   let totalPesos = '';
   let totalDolares = '';
+  let indiceTotal = -1; // Guardar el índice donde encontramos el total
+  let indiceOtroTotal = -1; // Guardar el índice del total de la otra sección (si existe)
 
   const lineas = texto.split('\n');
   
+  // Buscar el índice del total de la otra sección (si se proporciona)
+  if (otroTotalMatchString) {
+    for (let i = 0; i < lineas.length; i++) {
+      if (lineas[i].includes(otroTotalMatchString)) {
+        indiceOtroTotal = i;
+        break;
+      }
+    }
+  }
+  
+  // Primera pasada: buscar el total y la sección de inicio
   for (let i = 0; i < lineas.length; i++) {
     const linea = lineas[i].trim();
     
@@ -103,6 +117,7 @@ function extraerConsumosConTotal(texto, nombreSeccion, totalMatchString) {
     }
     
     if (linea.includes(totalMatchString)) {
+      indiceTotal = i;
       dentroDeSeccion = false;
       // Buscar los totales - pueden estar en la misma línea o en las siguientes
       // Formato: "2.414.894,7242,61" (pesos y dólares concatenados)
@@ -139,7 +154,10 @@ function extraerConsumosConTotal(texto, nombreSeccion, totalMatchString) {
       if (linea.includes('FECHA') || linea.includes('DESCRIPCIÓN') || linea.includes('NRO. CUPÓN') || 
           linea.includes('PESOS') || linea.includes('DÓLARES') || linea === '' ||
           linea.includes('Banco BBVA') || linea.includes('Sobre (') ||
-          linea.includes('Resumen') || linea.includes('Premium World') || linea.includes('Visa')) {
+          linea.includes('Resumen') || linea.includes('Premium World') || linea.includes('Visa') ||
+          linea.includes('SALDO ACTUAL') || linea.includes('SU PAGO EN') || 
+          linea.includes('PAGO EN PESOS') || linea.includes('PAGO EN USD') ||
+          linea.match(/^SALDO\s+ACTUAL/i) || linea.match(/^SU\s+PAGO/i)) {
         continue;
       }
       
@@ -261,6 +279,171 @@ function extraerConsumosConTotal(texto, nombreSeccion, totalMatchString) {
           }
           
           detalles.push({
+            fecha: fecha_raw,
+            fechaTimestamp: fecha_timestamp,
+            descripcion: descripcion,
+            importe: importe,
+            isUSD: isUSD
+          });
+        }
+      }
+    }
+  }
+
+  // Si encontramos el total pero no encontramos la sección de inicio ni items,
+  // buscar hacia atrás desde el total para encontrar items
+  if (indiceTotal >= 0 && detalles.length === 0 && totalPesos) {
+    // Buscar hacia atrás desde el total hasta encontrar items o llegar al inicio
+    // Limitar la búsqueda a las últimas 200 líneas antes del total
+    // Pero también detener si encontramos el total de la otra sección
+    const inicioBusqueda = Math.max(0, indiceTotal - 200);
+    // Si hay otro total, no buscar más allá de ese punto
+    const limiteBusqueda = indiceOtroTotal >= 0 ? Math.max(inicioBusqueda, indiceOtroTotal + 1) : inicioBusqueda;
+    
+    for (let i = indiceTotal - 1; i >= limiteBusqueda; i--) {
+      const linea = lineas[i] ? lineas[i].trim() : '';
+      
+      // Si encontramos el total de la otra sección, detener inmediatamente
+      if (otroTotalMatchString && linea.includes(otroTotalMatchString)) {
+        break;
+      }
+      
+      // Si encontramos otra sección de totales o encabezados importantes, detener
+      if (linea.includes('TOTAL CONSUMOS') || 
+          linea.includes('SALDO ACTUAL') ||
+          linea.includes('CONSOLIDADO') ||
+          linea.includes('CIERRE ACTUAL') ||
+          (linea.includes('Consumos') && !linea.includes(totalMatchString))) {
+        // Si encontramos otra sección de consumos que no es el total, detener
+        if (linea.includes('Consumos') && !linea.includes('TOTAL')) {
+          break;
+        }
+        continue;
+      }
+      
+      // Saltar líneas de encabezado
+      if (linea.includes('FECHA') || linea.includes('DESCRIPCIÓN') || linea.includes('NRO. CUPÓN') || 
+          linea.includes('PESOS') || linea.includes('DÓLARES') || linea === '' ||
+          linea.includes('Banco BBVA') || linea.includes('Sobre (') ||
+          linea.includes('Resumen') || linea.includes('Premium World') ||
+          linea.includes('SALDO ACTUAL') || linea.includes('SU PAGO EN') || 
+          linea.includes('PAGO EN PESOS') || linea.includes('PAGO EN USD') ||
+          linea.match(/^SALDO\s+ACTUAL/i) || linea.match(/^SU\s+PAGO/i)) {
+        continue;
+      }
+      
+      // Detectar si la línea empieza con una fecha
+      const fechaMatch = linea.match(/^(\d{2}-[A-Za-z]{3}-\d{2})/);
+      if (fechaMatch) {
+        const fechaRaw = fechaMatch[1];
+        let descripcion = '';
+        let importe = '';
+        
+        // Caso 1: Todo está en la misma línea (fecha descripción importe)
+        const importesEnLinea = linea.match(/(\d{1,3}(?:\.\d{3})*,\d{2})/g);
+        if (importesEnLinea && importesEnLinea.length > 0) {
+          importe = importesEnLinea[importesEnLinea.length - 1];
+          const importeIndex = linea.indexOf(importesEnLinea[0]);
+          descripcion = linea.substring(fechaRaw.length, importeIndex).trim();
+          descripcion = limpiarDescripcion(descripcion);
+          
+          // Filtrar descripciones que no son consumos reales
+          if (descripcion.includes('SALDO ACTUAL') || descripcion.includes('SU PAGO EN') ||
+              descripcion.match(/^SALDO\s+ACTUAL/i) || descripcion.match(/^SU\s+PAGO/i)) {
+            continue;
+          }
+        } else {
+          // Caso 2: Los datos están en líneas separadas
+          const restoDeLinea = linea.substring(fechaRaw.length).trim();
+          
+          // Buscar descripción e importe en las siguientes líneas (hacia adelante)
+          for (let j = i + 1; j < Math.min(i + 6, indiceTotal); j++) {
+            const siguienteLinea = lineas[j] ? lineas[j].trim() : '';
+            
+            // Si encontramos otra fecha o el total, detener
+            if (siguienteLinea.match(/^(\d{2}-[A-Za-z]{3}-\d{2})/) || 
+                siguienteLinea.includes(totalMatchString)) {
+              break;
+            }
+            
+            // Si la línea está vacía o es un encabezado, continuar
+            if (!siguienteLinea || siguienteLinea.includes('TOTAL') ||
+                siguienteLinea.includes('SALDO ACTUAL') || siguienteLinea.includes('Consumos') ||
+                siguienteLinea.includes('FECHA') || siguienteLinea.includes('DESCRIPCIÓN') ||
+                siguienteLinea.includes('NRO. CUPÓN') || siguienteLinea.includes('PESOS') ||
+                siguienteLinea.includes('DÓLARES') || siguienteLinea === '') {
+              continue;
+            }
+            
+            // Buscar importe en esta línea
+            const importesMatch = siguienteLinea.match(/(\d{1,3}(?:\.\d{3})*,\d{2})/g);
+            
+            if (importesMatch && importesMatch.length > 0) {
+              importe = importesMatch[importesMatch.length - 1];
+              
+              if (!descripcion || descripcion.length < 3) {
+                const importeIndex = siguienteLinea.indexOf(importesMatch[0]);
+                const descripcionEnLinea = siguienteLinea.substring(0, importeIndex).trim();
+                if (descripcionEnLinea && descripcionEnLinea.length > 3) {
+                  descripcion = limpiarDescripcion(descripcionEnLinea);
+                } else if (restoDeLinea && restoDeLinea.length > 3) {
+                  descripcion = limpiarDescripcion(restoDeLinea);
+                } else if (j > i + 1) {
+                  const lineaAnterior = lineas[j - 1] ? lineas[j - 1].trim() : '';
+                  if (lineaAnterior && lineaAnterior.length > 3 && 
+                      !lineaAnterior.match(/^(\d{2}-[A-Za-z]{3}-\d{2})/) &&
+                      !lineaAnterior.match(/(\d{1,3}(?:\.\d{3})*,\d{2})/)) {
+                    descripcion = limpiarDescripcion(lineaAnterior);
+                  }
+                }
+              } else {
+                descripcion = limpiarDescripcion(descripcion);
+              }
+              break;
+            } else {
+              if (!descripcion || descripcion.length < 3) {
+                if (siguienteLinea.length > 3 && siguienteLinea.length < 200 &&
+                    !siguienteLinea.match(/^(Sobre|Banco|Resumen|Premium|Visa|Tarjetas|CONSOLIDADO|CIERRE|VENCIMIENTO|SALDO|PAGO|Límites|Pesos|Dólares|FECHA|DESCRIPCIÓN|NRO|CUPÓN)/i) &&
+                    !siguienteLinea.match(/^\d+$/) &&
+                    !siguienteLinea.match(/^[A-Z\s]{20,}$/) &&
+                    !siguienteLinea.match(/^[^\w\s]*$/)) {
+                  descripcion = limpiarDescripcion(siguienteLinea);
+                } else if (restoDeLinea && restoDeLinea.length > 3) {
+                  descripcion = limpiarDescripcion(restoDeLinea);
+                }
+              } else {
+                descripcion = limpiarDescripcion(descripcion);
+              }
+            }
+          }
+        }
+        
+        // Solo agregar si tenemos fecha, descripción e importe válidos
+        // Filtrar descripciones que no son consumos reales
+        if (fechaRaw && descripcion && descripcion.length >= 3 && importe &&
+            !descripcion.includes('SALDO ACTUAL') && !descripcion.includes('SU PAGO EN') &&
+            !descripcion.match(/^SALDO\s+ACTUAL/i) && !descripcion.match(/^SU\s+PAGO/i) &&
+            !descripcion.includes('PAGO EN PESOS') && !descripcion.includes('PAGO EN USD')) {
+          const { fecha_raw, fecha_timestamp } = convertirFecha(fechaRaw);
+          
+          let isUSD = descripcion.toUpperCase().includes('USD') || 
+                      linea.toUpperCase().includes('USD');
+          
+          if (!isUSD) {
+            for (let k = i + 1; k < Math.min(i + 3, indiceTotal); k++) {
+              const siguienteLinea = lineas[k] ? lineas[k].trim() : '';
+              if (siguienteLinea.toUpperCase().includes('USD')) {
+                isUSD = true;
+                break;
+              }
+              if (siguienteLinea.match(/^(\d{2}-[A-Za-z]{3}-\d{2})/)) {
+                break;
+              }
+            }
+          }
+          
+          // Insertar al inicio para mantener el orden cronológico
+          detalles.unshift({
             fecha: fecha_raw,
             fechaTimestamp: fecha_timestamp,
             descripcion: descripcion,
@@ -629,17 +812,36 @@ router.post('/syncResumes', async (req, res) => {
         const data = await pdf(pdfBuffer);
         const textoTotal = data.text;
 
+        // Debug: buscar si existen las secciones esperadas (solo en endpoint de prueba)
+        let tieneSeccionJuan, tieneSeccionCami, tieneImpuestos, seccionesEncontradas;
+        // Estas variables se definirán solo en el endpoint /test
+        tieneSeccionJuan = textoTotal.includes('Consumos J Fernandez Tubello') || 
+                            textoTotal.includes('Consumos J Fernandez') ||
+                            textoTotal.includes('J Fernandez');
+        tieneSeccionCami = textoTotal.includes('Consumos Camila V Montiel') || 
+                           textoTotal.includes('Consumos Camila') ||
+                           textoTotal.includes('Camila V Montiel');
+        tieneImpuestos = textoTotal.includes('Impuestos, cargos e intereses');
+        
+        // Buscar variaciones de los nombres de sección
+        const lineasTexto = textoTotal.split('\n');
+        seccionesEncontradas = lineasTexto.filter(linea => 
+          linea.includes('Consumos') || linea.includes('CONSUMOS')
+        ).slice(0, 10); // Primeras 10 líneas con "Consumos"
+
         // Procesar secciones
         const juanResult = extraerConsumosConTotal(
           textoTotal,
           'Consumos J Fernandez Tubello',
-          'TOTAL CONSUMOS DE J FERNANDEZ TUBELLO'
+          'TOTAL CONSUMOS DE J FERNANDEZ TUBELLO',
+          'TOTAL CONSUMOS DE CAMILA V MONTIEL' // Total de la otra sección
         );
         
         const camiResult = extraerConsumosConTotal(
           textoTotal,
           'Consumos Camila V Montiel',
-          'TOTAL CONSUMOS DE CAMILA V MONTIEL'
+          'TOTAL CONSUMOS DE CAMILA V MONTIEL',
+          'TOTAL CONSUMOS DE J FERNANDEZ TUBELLO' // Total de la otra sección
         );
         
         const impuestosResult = extraerImpuestos(textoTotal);
@@ -954,6 +1156,364 @@ router.post('/syncResumes', async (req, res) => {
         code: 'ERROR_SYNC_RESUMES',
         message: 'Error al procesar los resúmenes',
         details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * GET /resumes/test
+ * Endpoint de prueba que procesa todos los PDFs del directorio resumes/
+ * Tiene el mismo comportamiento que /syncResumes pero NO inserta en la base de datos
+ * Solo devuelve lo que debería insertar
+ */
+router.get('/test', async (req, res) => {
+  // Este es el endpoint de prueba - agregar debug aquí
+  try {
+    // Verificar que el directorio existe
+    if (!fs.existsSync(RESUMES_DIR)) {
+      fs.mkdirSync(RESUMES_DIR, { recursive: true });
+    }
+
+    // Buscar archivos PDF en el directorio
+    const archivos = fs.readdirSync(RESUMES_DIR);
+    const pdfs = archivos.filter(archivo => 
+      archivo.toLowerCase().endsWith('.pdf') && 
+      (archivo.startsWith('VISA_') || archivo.startsWith('MASTERCARD_'))
+    );
+
+    console.log(`📁 Archivos encontrados en ${RESUMES_DIR}:`, archivos);
+    console.log(`📄 PDFs encontrados: ${pdfs.length}`, pdfs);
+
+    if (pdfs.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No se encontraron PDFs en el directorio resumes/',
+        total: 0,
+        resumes: [],
+        debug: {
+          allFiles: archivos,
+          pdfsFound: []
+        }
+      });
+    }
+
+    const resultados = [];
+    
+    // Separar PDFs por tipo y ordenar: VISA primero, luego MASTERCARD
+    const visaPdfs = pdfs.filter(p => p.startsWith('VISA_'));
+    const mastercardPdfs = pdfs.filter(p => p.startsWith('MASTERCARD_'));
+    const sortedPdfs = [...visaPdfs, ...mastercardPdfs];
+    
+    console.log(`🔄 Procesando ${sortedPdfs.length} PDFs:`, sortedPdfs);
+    
+    // Variable para guardar el conversion_amount de VISA
+    let visaConversionAmount = null;
+    let visaConversionAmountData = null;
+
+    // Procesar cada PDF
+    for (const pdfFile of sortedPdfs) {
+      try {
+        const pdfPath = path.join(RESUMES_DIR, pdfFile);
+        const pdfBuffer = fs.readFileSync(pdfPath);
+        
+        // Generar UUID basado en el hash del contenido
+        const uuid = generarUUIDDesdeHash(pdfBuffer);
+
+        // Extraer información del nombre del archivo
+        const archivoInfo = extraerInfoDelArchivo(pdfFile);
+        if (!archivoInfo) {
+          throw new Error(`Formato de archivo no válido: ${pdfFile}. Se espera VISA_MM_YYYY.pdf o MASTERCARD_MM_YYYY.pdf`);
+        }
+
+        // Extraer texto del PDF
+        const data = await pdf(pdfBuffer);
+        const textoTotal = data.text;
+
+        // Debug: buscar si existen las secciones esperadas (solo en endpoint de prueba)
+        let tieneSeccionJuan, tieneSeccionCami, tieneImpuestos, seccionesEncontradas;
+        // Estas variables se definirán solo en el endpoint /test
+        tieneSeccionJuan = textoTotal.includes('Consumos J Fernandez Tubello') || 
+                            textoTotal.includes('Consumos J Fernandez') ||
+                            textoTotal.includes('J Fernandez');
+        tieneSeccionCami = textoTotal.includes('Consumos Camila V Montiel') || 
+                           textoTotal.includes('Consumos Camila') ||
+                           textoTotal.includes('Camila V Montiel');
+        tieneImpuestos = textoTotal.includes('Impuestos, cargos e intereses');
+        
+        // Buscar variaciones de los nombres de sección
+        const lineasTexto = textoTotal.split('\n');
+        seccionesEncontradas = lineasTexto.filter(linea => 
+          linea.includes('Consumos') || linea.includes('CONSUMOS')
+        ).slice(0, 10); // Primeras 10 líneas con "Consumos"
+
+        // Procesar secciones
+        const juanResult = extraerConsumosConTotal(
+          textoTotal,
+          'Consumos J Fernandez Tubello',
+          'TOTAL CONSUMOS DE J FERNANDEZ TUBELLO',
+          'TOTAL CONSUMOS DE CAMILA V MONTIEL' // Total de la otra sección
+        );
+        
+        const camiResult = extraerConsumosConTotal(
+          textoTotal,
+          'Consumos Camila V Montiel',
+          'TOTAL CONSUMOS DE CAMILA V MONTIEL',
+          'TOTAL CONSUMOS DE J FERNANDEZ TUBELLO' // Total de la otra sección
+        );
+        
+        const impuestosResult = extraerImpuestos(textoTotal);
+
+        // Parsear totales a centavos
+        const juanTotalPesosCents = juanResult.total.pesos ? parseAmountToCents(juanResult.total.pesos) : 0;
+        const juanTotalDolaresCents = juanResult.total.dolares ? parseAmountToCents(juanResult.total.dolares) : 0;
+        const camiTotalPesosCents = camiResult.total.pesos ? parseAmountToCents(camiResult.total.pesos) : 0;
+        const camiTotalDolaresCents = camiResult.total.dolares ? parseAmountToCents(camiResult.total.dolares) : 0;
+        const totalPesosCents = impuestosResult.total.pesos ? parseAmountToCents(impuestosResult.total.pesos) : 0;
+        const totalDolaresCents = impuestosResult.total.dolares ? parseAmountToCents(impuestosResult.total.dolares) : 0;
+
+        // Calcular totales consolidados
+        const totalAmountArsCents = juanTotalPesosCents + camiTotalPesosCents;
+        const totalAmountUsdCents = juanTotalDolaresCents + camiTotalDolaresCents;
+        
+        // Calcular conversion_amount (dólar tarjeta efectivo)
+        let conversionAmountData = null;
+        let conversionAmountCents = 0;
+        
+        if (archivoInfo.cardType === 'VISA') {
+          // Para VISA, calcular el conversion_amount
+          conversionAmountData = calcularConversionAmount(textoTotal);
+          conversionAmountCents = conversionAmountData 
+            ? conversionAmountData.conversion_amount_cents 
+            : 0;
+          
+          // Guardar para usar en MASTERCARD
+          visaConversionAmount = conversionAmountData ? conversionAmountData.conversion_amount : null;
+          visaConversionAmountData = conversionAmountData;
+        } else if (archivoInfo.cardType === 'MASTERCARD') {
+          // Para MASTERCARD, usar el conversion_amount de VISA si existe
+          if (visaConversionAmount !== null) {
+            conversionAmountCents = Math.round(visaConversionAmount * 100);
+            conversionAmountData = {
+              conversion_amount: visaConversionAmount,
+              conversion_amount_cents: conversionAmountCents,
+              debug_info: visaConversionAmountData ? visaConversionAmountData.debug_info : null
+            };
+          } else {
+            // Si no hay VISA, intentar leer el archivo .txt
+            const txtFileName = `MASTERCARD_${String(archivoInfo.month).padStart(2, '0')}_${archivoInfo.year}_USD.txt`;
+            const txtFilePath = path.join(RESUMES_DIR, txtFileName);
+            
+            if (fs.existsSync(txtFilePath)) {
+              try {
+                const txtContent = fs.readFileSync(txtFilePath, 'utf-8').trim();
+                const conversionAmountFromFile = parseFloat(txtContent);
+                
+                if (!isNaN(conversionAmountFromFile)) {
+                  conversionAmountCents = Math.round(conversionAmountFromFile * 100);
+                  conversionAmountData = {
+                    conversion_amount: conversionAmountFromFile,
+                    conversion_amount_cents: conversionAmountCents,
+                    debug_info: {
+                      total_usd: null,
+                      base_pesos: null,
+                      fx_base: null,
+                      factor_impuestos: null,
+                      conversion_amount: conversionAmountFromFile,
+                      source: 'txt_file'
+                    }
+                  };
+                  console.log(`📄 Usando conversion_amount desde archivo: ${txtFileName} = ${conversionAmountFromFile}`);
+                } else {
+                  console.warn(`⚠️  Valor inválido en ${txtFileName}: ${txtContent}`);
+                }
+              } catch (err) {
+                console.error(`❌ Error leyendo ${txtFileName}:`, err.message);
+              }
+            } else {
+              console.warn(`⚠️  No se encontró VISA ni archivo ${txtFileName} para MASTERCARD`);
+            }
+          }
+        }
+
+        // Construir items
+        const items = [];
+        let position = 1;
+
+        // Items de Juan
+        for (const detalle of juanResult.detalles) {
+          const isUSD = detalle.isUSD || false;
+          const amountCents = parseAmountToCents(detalle.importe);
+          const isCuota = detalle.descripcion.includes('C.') ? 1 : 0;
+          
+          // Si es USD, calcular amount_ars multiplicando por conversion_amount
+          let amountArsCents = 0;
+          let amountArs = 0;
+          if (isUSD && conversionAmountData) {
+            const amountUsd = amountCents / 100;
+            const amountArsCalculated = amountUsd * conversionAmountData.conversion_amount;
+            amountArsCents = Math.round(amountArsCalculated * 100);
+            amountArs = amountArsCents / 100;
+          } else if (!isUSD) {
+            amountArsCents = amountCents;
+            amountArs = amountCents / 100;
+          }
+          
+          items.push({
+            position: position++,
+            amount_ars: amountArs,
+            amount_ars_cents: amountArsCents,
+            amount_usd: isUSD ? amountCents / 100 : 0,
+            amount_usd_cents: isUSD ? amountCents : 0,
+            holder: 'Juan',
+            description: detalle.descripcion,
+            is_cuota: isCuota,
+            date_string: detalle.fecha,
+            datetime: detalle.fechaTimestamp
+          });
+        }
+
+        // Items de Cami
+        for (const detalle of camiResult.detalles) {
+          const isUSD = detalle.isUSD || false;
+          const amountCents = parseAmountToCents(detalle.importe);
+          const isCuota = detalle.descripcion.includes('C.') ? 1 : 0;
+          
+          // Si es USD, calcular amount_ars multiplicando por conversion_amount
+          let amountArsCents = 0;
+          let amountArs = 0;
+          if (isUSD && conversionAmountData) {
+            const amountUsd = amountCents / 100;
+            const amountArsCalculated = amountUsd * conversionAmountData.conversion_amount;
+            amountArsCents = Math.round(amountArsCalculated * 100);
+            amountArs = amountArsCents / 100;
+          } else if (!isUSD) {
+            amountArsCents = amountCents;
+            amountArs = amountCents / 100;
+          }
+          
+          items.push({
+            position: position++,
+            amount_ars: amountArs,
+            amount_ars_cents: amountArsCents,
+            amount_usd: isUSD ? amountCents / 100 : 0,
+            amount_usd_cents: isUSD ? amountCents : 0,
+            holder: 'Cami',
+            description: detalle.descripcion,
+            is_cuota: isCuota,
+            date_string: detalle.fecha,
+            datetime: detalle.fechaTimestamp
+          });
+        }
+
+        // Items de impuestos
+        for (const detalle of impuestosResult.detalles) {
+          const amountArsCents = parseAmountToCents(detalle.importe);
+          
+          items.push({
+            position: position++,
+            amount_ars: amountArsCents / 100,
+            amount_ars_cents: amountArsCents,
+            amount_usd: 0,
+            amount_usd_cents: 0,
+            holder: 'System',
+            description: detalle.descripcion,
+            is_cuota: 0,
+            date_string: detalle.fecha,
+            datetime: detalle.fechaTimestamp
+          });
+        }
+
+        // Calcular amount_total_ars: total en pesos (con impuestos) + dólares convertidos a pesos
+        const conversionAmount = conversionAmountData ? conversionAmountData.conversion_amount : 0;
+        const amountTotalArs = (totalPesosCents / 100) + ((totalAmountUsdCents / 100) * conversionAmount);
+        const amountTotalArsCents = Math.round(amountTotalArs * 100);
+
+        // Construir statement (cabecera) - limpiado y con campos que matchean la BD
+        const now = new Date().toISOString();
+        const debugInfo = conversionAmountData && conversionAmountData.debug_info ? conversionAmountData.debug_info : null;
+        
+        const statement = {
+          uuid,
+          year: archivoInfo.year,
+          month: archivoInfo.month,
+          card_type: archivoInfo.cardType,
+          filename: pdfFile,
+          amount_ars: totalAmountArsCents / 100,
+          amount_ars_cents: totalAmountArsCents,
+          amount_usd: totalAmountUsdCents / 100,
+          amount_usd_cents: totalAmountUsdCents,
+          conversion_amount: conversionAmount,
+          conversion_amount_cents: conversionAmountCents,
+          total_amount_ars: totalPesosCents / 100,
+          total_amount_ars_cents: totalPesosCents,
+          amount_total_ars: amountTotalArs,
+          amount_total_ars_cents: amountTotalArsCents,
+          datetime: now,
+          // Campos de debug del cálculo del dólar tarjeta
+          total_usd: debugInfo ? debugInfo.total_usd : null,
+          base_pesos: debugInfo ? debugInfo.base_pesos : null,
+          fx_base: debugInfo ? debugInfo.fx_base : null,
+          factor_impuestos: debugInfo ? debugInfo.factor_impuestos : null
+        };
+
+        // NO INSERTAR EN BD - Solo agregar a resultados
+        const resultadoItem = {
+          statement,
+          items,
+          items_count: items.length,
+          pdf_text_preview: textoTotal.substring(0, 500) + (textoTotal.length > 500 ? '...' : ''),
+          pdf_text_length: textoTotal.length
+        };
+        
+        // Agregar debug solo si las variables están definidas (endpoint de prueba)
+        if (typeof tieneSeccionJuan !== 'undefined') {
+          resultadoItem.debug = {
+            tieneSeccionJuan,
+            tieneSeccionCami,
+            tieneImpuestos,
+            seccionesEncontradas,
+            juanDetallesCount: juanResult.detalles.length,
+            camiDetallesCount: camiResult.detalles.length,
+            impuestosDetallesCount: impuestosResult.detalles.length,
+            juanTotal: juanResult.total,
+            camiTotal: camiResult.total,
+            impuestosTotal: impuestosResult.total
+          };
+        }
+        
+        resultados.push(resultadoItem);
+      } catch (error) {
+        console.error(`Error procesando ${pdfFile}:`, error);
+        resultados.push({
+          filename: pdfFile,
+          error: error.message,
+          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Resúmenes procesados (sin insertar en BD)',
+      total: resultados.length,
+      resumes: resultados,
+      debug: {
+        pdfsFound: pdfs.length,
+        pdfsProcessed: resultados.filter(r => !r.error).length,
+        pdfsWithErrors: resultados.filter(r => r.error).length,
+        pdfsList: pdfs,
+        sortedPdfs: sortedPdfs
+      }
+    });
+  } catch (error) {
+    console.error('Error en GET /resumes/test:', error);
+    res.status(500).json({
+      error: {
+        code: 'ERROR_TEST_RESUMES',
+        message: 'Error al procesar los resúmenes de prueba',
+        details: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
       }
     });
   }
