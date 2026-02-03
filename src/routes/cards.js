@@ -112,12 +112,24 @@ router.get('/statements', async (req, res) => {
     const mastercardItems = items.filter(i => i.UUID === mastercardUuid);
 
     // Calcular totales
-    const calculateTotals = (itemsList) => {
+    const calculateTotals = (itemsList, conversionAmountValue) => {
       const cuotas = itemsList.filter(i => i.IS_CUOTA === 1);
       const pagosUnicos = itemsList.filter(i => i.IS_CUOTA === 0);
       
-      const totalCuotasCents = cuotas.reduce((sum, i) => sum + i.AMOUNT_ARS, 0);
-      const totalPagosUnicosCents = pagosUnicos.reduce((sum, i) => sum + i.AMOUNT_ARS, 0);
+      // Función para obtener el monto en pesos de un item (ARS + USD convertido)
+      const getAmountArsCents = (item) => {
+        let totalCents = item.AMOUNT_ARS || 0;
+        // Si tiene USD, convertirlo a pesos y sumarlo
+        if (item.AMOUNT_USD > 0 && conversionAmountValue) {
+          const usdAmount = item.AMOUNT_USD / 100; // Convertir centavos a dólares
+          const usdInPesosCents = Math.round(usdAmount * conversionAmountValue * 100);
+          totalCents += usdInPesosCents;
+        }
+        return totalCents;
+      };
+      
+      const totalCuotasCents = cuotas.reduce((sum, i) => sum + getAmountArsCents(i), 0);
+      const totalPagosUnicosCents = pagosUnicos.reduce((sum, i) => sum + getAmountArsCents(i), 0);
       const totalCents = totalCuotasCents + totalPagosUnicosCents;
 
       return {
@@ -130,13 +142,21 @@ router.get('/statements', async (req, res) => {
       };
     };
 
-    const visaTotals = visaItems.length > 0 ? calculateTotals(visaItems) : {
+    // Obtener conversion_amount por tarjeta
+    const visaConversionAmount = visaStatement && visaStatement.CONVERSION_AMOUNT 
+      ? visaStatement.CONVERSION_AMOUNT / 100 
+      : conversionAmount;
+    const mastercardConversionAmount = mastercardStatement && mastercardStatement.CONVERSION_AMOUNT 
+      ? mastercardStatement.CONVERSION_AMOUNT / 100 
+      : conversionAmount;
+
+    const visaTotals = visaItems.length > 0 ? calculateTotals(visaItems, visaConversionAmount) : {
       total_cuotas: 0, total_cuotas_cents: 0,
       total_pagos_unicos: 0, total_pagos_unicos_cents: 0,
       total: 0, total_cents: 0
     };
 
-    const mastercardTotals = mastercardItems.length > 0 ? calculateTotals(mastercardItems) : {
+    const mastercardTotals = mastercardItems.length > 0 ? calculateTotals(mastercardItems, mastercardConversionAmount) : {
       total_cuotas: 0, total_cuotas_cents: 0,
       total_pagos_unicos: 0, total_pagos_unicos_cents: 0,
       total: 0, total_cents: 0
