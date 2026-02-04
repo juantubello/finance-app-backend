@@ -9,11 +9,11 @@ const router = express.Router();
  * Query params:
  * - year: año (requerido)
  * - month: mes (opcional, 1-12)
- * - currency: moneda (default: 'ARS')
+ * - currency: moneda (opcional, si no se especifica devuelve todas las monedas)
  */
 router.get('/', async (req, res) => {
   try {
-    const { year, month, currency = 'ARS' } = req.query;
+    const { year, month, currency } = req.query;
 
     if (!year) {
       return res.status(400).json({
@@ -30,9 +30,15 @@ router.get('/', async (req, res) => {
         UUID, DATETIME, YEAR, MONTH, TYPE, AMOUNT, CURRENCY,
         CATEGORY, DESCRIPTION, AFFECTS_LIQUIDITY
       FROM TRANSACTIONS
-      WHERE YEAR = ? AND TYPE = 'EXPENSE' AND CURRENCY = ?
+      WHERE YEAR = ? AND TYPE = 'EXPENSE'
     `;
-    const params = [yearInt, currency];
+    const params = [yearInt];
+    
+    // Si se especifica currency, filtrar por esa moneda
+    if (currency) {
+      query += ' AND CURRENCY = ?';
+      params.push(currency);
+    }
 
     if (month) {
       const monthInt = parseInt(month, 10);
@@ -69,13 +75,25 @@ router.get('/', async (req, res) => {
       affects_liquidity: expense.AFFECTS_LIQUIDITY
     }));
 
+    // Calcular totales por moneda si no se especificó una moneda específica
+    const totalsByCurrency = currency ? null : formatted.reduce((acc, e) => {
+      if (!acc[e.currency]) {
+        acc[e.currency] = { total: 0, total_cents: 0, count: 0 };
+      }
+      acc[e.currency].total += e.amount;
+      acc[e.currency].total_cents += e.amount_cents;
+      acc[e.currency].count += 1;
+      return acc;
+    }, {});
+
     res.json({
       year: yearInt,
       month: month ? parseInt(month, 10) : null,
-      currency,
+      currency: currency || 'ALL',
       total: formatted.length,
       total_amount: formatted.reduce((sum, e) => sum + e.amount, 0),
       total_amount_cents: formatted.reduce((sum, e) => sum + e.amount_cents, 0),
+      totals_by_currency: totalsByCurrency,
       expenses: formatted
     });
   } catch (err) {

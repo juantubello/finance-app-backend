@@ -45,13 +45,14 @@ router.post('/', async (req, res) => {
     }
 
     // Detectar currency automáticamente si no se especifica explícitamente
-    // Si viene explícitamente, usarlo; si no, detectar desde categoría/descripción
+    // Si viene explícitamente, usarlo; si no, detectar solo desde categoría (no descripción)
+    // La descripción puede contener información del dólar del día pero el gasto sigue siendo en ARS
     let finalCurrency = currency;
     if (!finalCurrency || finalCurrency === 'ARS') {
-      // Si no se especifica o es el default, intentar detectar desde categoría/descripción
+      // Solo detectar desde categoría, no desde descripción
+      // La descripción puede tener "USD 1470" como referencia del dólar del día
       const categoryLower = (category || '').toLowerCase();
-      const descriptionLower = (description || '').toLowerCase();
-      if (categoryLower.includes('usd') || descriptionLower.includes('usd')) {
+      if (categoryLower.includes('usd')) {
         finalCurrency = 'USD';
       } else {
         finalCurrency = 'ARS'; // Default
