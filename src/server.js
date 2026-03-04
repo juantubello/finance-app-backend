@@ -21,8 +21,18 @@ import cedearsRouter from './routes/cedears.js';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware CORS - Permitir todas las solicitudes desde el frontend
+// Middleware CORS mejorado - Asegurar headers siempre, incluso en errores
 app.use((req, res, next) => {
+  // Guardar función original de json para asegurar headers CORS
+  const originalJson = res.json.bind(res);
+  res.json = function(body) {
+    // Asegurar headers CORS antes de enviar respuesta
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    return originalJson(body);
+  };
+
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
@@ -40,8 +50,12 @@ app.use(express.json({ limit: '10mb' }));
 
 // Middleware de timeout para peticiones (30 segundos)
 app.use((req, res, next) => {
+  // Asegurar headers CORS en timeout también
   const timeout = setTimeout(() => {
     if (!res.headersSent) {
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
       res.status(504).json({
         error: {
           code: 'TIMEOUT',
@@ -57,6 +71,11 @@ app.use((req, res, next) => {
     clearTimeout(timeout);
     originalEnd.apply(this, args);
   };
+
+  // Manejar errores de conexión cerrada
+  req.on('close', () => {
+    clearTimeout(timeout);
+  });
 
   next();
 });
@@ -98,6 +117,11 @@ app.use((err, req, res, next) => {
     return next(err);
   }
   
+  // Asegurar headers CORS incluso en errores
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
   // Determinar código de estado apropiado
   const statusCode = err.statusCode || err.status || 500;
   
@@ -112,6 +136,11 @@ app.use((err, req, res, next) => {
 
 // Middleware para rutas no encontradas
 app.use((req, res) => {
+  // Asegurar headers CORS
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
   res.status(404).json({
     error: {
       code: 'NOT_FOUND',
@@ -120,34 +149,63 @@ app.use((req, res) => {
   });
 });
 
-// Iniciar servidor
-app.listen(PORT, () => {
+// Iniciar servidor con configuración mejorada para conexiones concurrentes
+const server = app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
   console.log(`Base de datos: ${process.env.DB_PATH || './data/finance.db'}`);
 });
 
+// Configurar límites de conexiones para evitar agotamiento de recursos
+server.maxConnections = 100; // Límite de conexiones simultáneas
+server.keepAliveTimeout = 65000; // 65 segundos (mayor que timeout de petición)
+server.headersTimeout = 66000; // 66 segundos (mayor que keepAliveTimeout)
+
+// Manejar errores del servidor
+server.on('error', (err) => {
+  console.error('Error del servidor:', err);
+});
+
+server.on('clientError', (err, socket) => {
+  console.error('Error de cliente:', err.message);
+  socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+});
+
 // Manejo de cierre graceful
-const closeDb = () => {
+const gracefulShutdown = async () => {
+  console.log('Iniciando cierre graceful...');
+  
+  // Cerrar servidor (deja de aceptar nuevas conexiones)
   return new Promise((resolve) => {
-    db.close((err) => {
-      if (err) {
-        console.error('Error cerrando base de datos:', err);
-      } else {
-        console.log('Base de datos cerrada');
-      }
-      resolve();
+    server.close(() => {
+      console.log('Servidor HTTP cerrado');
+      
+      // Cerrar base de datos
+      db.close((err) => {
+        if (err) {
+          console.error('Error cerrando base de datos:', err);
+        } else {
+          console.log('Base de datos cerrada');
+        }
+        resolve();
+      });
     });
+    
+    // Forzar cierre después de 10 segundos
+    setTimeout(() => {
+      console.log('Forzando cierre...');
+      process.exit(1);
+    }, 10000);
   });
 };
 
 process.on('SIGTERM', async () => {
-  console.log('SIGTERM recibido, cerrando servidor...');
-  await closeDb();
+  console.log('SIGTERM recibido');
+  await gracefulShutdown();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
-  console.log('SIGINT recibido, cerrando servidor...');
-  await closeDb();
+  console.log('SIGINT recibido');
+  await gracefulShutdown();
   process.exit(0);
 });
