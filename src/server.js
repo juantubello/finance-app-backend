@@ -96,14 +96,17 @@ app.use((req, res, next) => {
   
   console.log(`[${timestamp}] ${req.method} ${req.path} [Activas: ${activeRequests}]`);
   
-  // Limpiar contador cuando la respuesta termina
-  res.on('finish', () => {
-    activeRequests--;
-  });
+  // Limpiar contador cuando la respuesta termina (solo una vez)
+  let decremented = false;
+  const decrementCounter = () => {
+    if (!decremented) {
+      decremented = true;
+      activeRequests = Math.max(0, activeRequests - 1); // Evitar números negativos
+    }
+  };
   
-  res.on('close', () => {
-    activeRequests--;
-  });
+  res.once('finish', decrementCounter);
+  res.once('close', decrementCounter);
   
   next();
 });
