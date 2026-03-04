@@ -12,6 +12,7 @@ const router = express.Router();
  * - currency: moneda (opcional, si no se especifica devuelve todas las monedas)
  */
 router.get('/', async (req, res) => {
+  let stmt = null;
   try {
     const { year, month, currency } = req.query;
 
@@ -56,9 +57,10 @@ router.get('/', async (req, res) => {
 
     query += ' ORDER BY DATETIME DESC';
 
-    const stmt = prepare(query);
+    stmt = prepare(query);
     const expenses = await stmt.all(...params);
     await stmt.finalize();
+    stmt = null;
 
     // Convertir AMOUNT de centavos a unidades
     const formatted = expenses.map(expense => ({
@@ -97,6 +99,14 @@ router.get('/', async (req, res) => {
       expenses: formatted
     });
   } catch (err) {
+    // Asegurar que el statement se finalice incluso si hay error
+    if (stmt) {
+      try {
+        await stmt.finalize();
+      } catch (finalizeErr) {
+        console.error('Error finalizando statement:', finalizeErr);
+      }
+    }
     console.error('Error en GET /expenses:', err);
     res.status(500).json({
       error: {

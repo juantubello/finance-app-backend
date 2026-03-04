@@ -8,6 +8,13 @@ const router = express.Router();
  * Resumen mensual del dashboard
  */
 router.get('/summary', async (req, res) => {
+  let incomeStmt = null;
+  let expenseStmt = null;
+  let savingStmt = null;
+  let openingBalanceStmt = null;
+  let liquidityTransactionsStmt = null;
+  let categoryBreakdownStmt = null;
+
   try {
     const { year, month, currency = 'ARS' } = req.query;
 
@@ -24,46 +31,50 @@ router.get('/summary', async (req, res) => {
     const monthInt = parseInt(month, 10);
 
     // Obtener totales por tipo
-    const incomeStmt = prepare(`
+    incomeStmt = prepare(`
       SELECT COALESCE(SUM(AMOUNT), 0) as total
       FROM TRANSACTIONS
       WHERE YEAR = ? AND MONTH = ? AND TYPE = 'INCOME' AND CURRENCY = ?
     `);
     const incomeResult = await incomeStmt.get(yearInt, monthInt, currency);
     await incomeStmt.finalize();
+    incomeStmt = null;
     const income_total = incomeResult?.total || 0;
 
-    const expenseStmt = prepare(`
+    expenseStmt = prepare(`
       SELECT COALESCE(SUM(AMOUNT), 0) as total
       FROM TRANSACTIONS
       WHERE YEAR = ? AND MONTH = ? AND TYPE = 'EXPENSE' AND CURRENCY = ?
     `);
     const expenseResult = await expenseStmt.get(yearInt, monthInt, currency);
     await expenseStmt.finalize();
+    expenseStmt = null;
     const expense_total = expenseResult?.total || 0;
 
-    const savingStmt = prepare(`
+    savingStmt = prepare(`
       SELECT COALESCE(SUM(AMOUNT), 0) as total
       FROM TRANSACTIONS
       WHERE YEAR = ? AND MONTH = ? AND TYPE = 'SAVING' AND CURRENCY = ?
     `);
     const savingResult = await savingStmt.get(yearInt, monthInt, currency);
     await savingStmt.finalize();
+    savingStmt = null;
     const saving_total = savingResult?.total || 0;
 
     // Calcular liquidez actual
     // SUM(LIQUIDITY_OPENING_BALANCE) + SUM(TRANSACTIONS WHERE AFFECTS_LIQUIDITY=1)
-    const openingBalanceStmt = prepare(`
+    openingBalanceStmt = prepare(`
       SELECT COALESCE(SUM(AMOUNT), 0) as total
       FROM LIQUIDITY_OPENING_BALANCE
       WHERE CURRENCY = ?
     `);
     const openingResult = await openingBalanceStmt.get(currency);
     await openingBalanceStmt.finalize();
+    openingBalanceStmt = null;
     const opening_balance = openingResult?.total || 0;
 
     // Calcular transacciones: INCOME suma, EXPENSE resta
-    const liquidityTransactionsStmt = prepare(`
+    liquidityTransactionsStmt = prepare(`
       SELECT 
         COALESCE(SUM(CASE WHEN TYPE = 'INCOME' THEN AMOUNT ELSE -AMOUNT END), 0) as total
       FROM TRANSACTIONS
@@ -71,12 +82,13 @@ router.get('/summary', async (req, res) => {
     `);
     const liquidityResult = await liquidityTransactionsStmt.get(currency);
     await liquidityTransactionsStmt.finalize();
+    liquidityTransactionsStmt = null;
     const liquidity_transactions = liquidityResult?.total || 0;
 
     const liquidity_current = opening_balance + liquidity_transactions;
 
     // Breakdown por categoría para gastos
-    const categoryBreakdownStmt = prepare(`
+    categoryBreakdownStmt = prepare(`
       SELECT 
         CATEGORY,
         COALESCE(SUM(AMOUNT), 0) as total_cents
@@ -87,6 +99,7 @@ router.get('/summary', async (req, res) => {
     `);
     const categoryBreakdown = await categoryBreakdownStmt.all(yearInt, monthInt, currency);
     await categoryBreakdownStmt.finalize();
+    categoryBreakdownStmt = null;
 
     const breakdown = categoryBreakdown.map(cat => ({
       category: cat.CATEGORY,
@@ -109,6 +122,17 @@ router.get('/summary', async (req, res) => {
       category_breakdown: breakdown
     });
   } catch (err) {
+    // Asegurar que todos los statements se finalicen incluso si hay error
+    const statements = [incomeStmt, expenseStmt, savingStmt, openingBalanceStmt, liquidityTransactionsStmt, categoryBreakdownStmt];
+    for (const stmt of statements) {
+      if (stmt) {
+        try {
+          await stmt.finalize();
+        } catch (finalizeErr) {
+          console.error('Error finalizando statement:', finalizeErr);
+        }
+      }
+    }
     console.error('Error en GET /dashboard/summary:', err);
     res.status(500).json({
       error: {

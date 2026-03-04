@@ -11,6 +11,10 @@ const router = express.Router();
  * - month: mes (requerido, 1-12)
  */
 router.get('/statements', async (req, res) => {
+  let statementsStmt = null;
+  let paymentFxStmt = null;
+  let itemsStmt = null;
+
   try {
     const { year, month } = req.query;
 
@@ -36,7 +40,7 @@ router.get('/statements', async (req, res) => {
     }
 
     // Obtener statements del mes/año
-    const statementsStmt = prepare(`
+    statementsStmt = prepare(`
       SELECT 
         UUID, YEAR, MONTH, CARD_TYPE, FILENAME,
         AMOUNT_ARS, AMOUNT_USD, CONVERSION_AMOUNT,
@@ -48,6 +52,7 @@ router.get('/statements', async (req, res) => {
 
     const statements = await statementsStmt.all(yearInt, monthInt);
     await statementsStmt.finalize();
+    statementsStmt = null;
 
     if (statements.length === 0) {
       return res.json({
@@ -78,13 +83,14 @@ router.get('/statements', async (req, res) => {
     }
 
     // Buscar si existe un tipo de cambio guardado para este mes/año
-    const paymentFxStmt = prepare(`
+    paymentFxStmt = prepare(`
       SELECT CONVERSION_AMOUNT
       FROM CARD_PAYMENT_FX
       WHERE YEAR = ? AND MONTH = ?
     `);
     const paymentFx = await paymentFxStmt.get(yearInt, monthInt);
     await paymentFxStmt.finalize();
+    paymentFxStmt = null;
 
     // Si existe tipo de cambio guardado, usarlo; si no, usar el calculado del PDF
     let conversionAmount = null;
@@ -104,7 +110,7 @@ router.get('/statements', async (req, res) => {
     const statementUuids = statements.map(s => s.UUID);
     const placeholders = statementUuids.map(() => '?').join(',');
     
-    const itemsStmt = prepare(`
+    itemsStmt = prepare(`
       SELECT 
         UUID, POSITION, AMOUNT_ARS, AMOUNT_USD, HOLDER,
         DESCRIPTION, IS_CUOTA, DATE_STRING, DATETIME
@@ -115,6 +121,7 @@ router.get('/statements', async (req, res) => {
 
     const items = await itemsStmt.all(...statementUuids);
     await itemsStmt.finalize();
+    itemsStmt = null;
 
     // Separar items por tarjeta y calcular totales
     const visaStatement = statements.find(s => s.CARD_TYPE === 'VISA');
@@ -265,6 +272,17 @@ router.get('/statements', async (req, res) => {
       }
     });
   } catch (err) {
+    // Asegurar que todos los statements se finalicen incluso si hay error
+    const statements = [statementsStmt, paymentFxStmt, itemsStmt];
+    for (const stmt of statements) {
+      if (stmt) {
+        try {
+          await stmt.finalize();
+        } catch (finalizeErr) {
+          console.error('Error finalizando statement:', finalizeErr);
+        }
+      }
+    }
     console.error('Error en GET /cards/statements:', err);
     res.status(500).json({
       error: {
