@@ -24,8 +24,17 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
   console.log('Conectado a SQLite');
 });
 
+// Configurar SQLite para mejor manejo de conexiones
 // Habilitar foreign keys
 db.run('PRAGMA foreign_keys = ON');
+// Optimizar para mejor rendimiento (WAL mode permite mejor concurrencia)
+try {
+  db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA synchronous = NORMAL');
+} catch (err) {
+  // Si WAL no está disponible, continuar con modo por defecto
+  console.warn('WAL mode no disponible, usando modo por defecto');
+}
 
 // Promisificar métodos
 db.runAsync = promisify(db.run.bind(db));
@@ -90,35 +99,75 @@ initSchema().catch(err => {
   process.exit(1);
 });
 
-// Helper para prepared statements
+// Helper para prepared statements con auto-finalización mejorada
 export function prepare(sql) {
   const stmt = db.prepare(sql);
-  return {
-    run: (...params) => new Promise((resolve, reject) => {
-      stmt.run(...params, function(err) {
-        if (err) reject(err);
-        else resolve({ lastInsertRowid: this.lastID, changes: this.changes });
+  let finalized = false;
+  
+  const safeFinalize = async () => {
+    if (!finalized) {
+      finalized = true;
+      return new Promise((resolve) => {
+        stmt.finalize((err) => {
+          if (err) {
+            console.error('Error finalizando statement:', err);
+          }
+          resolve();
+        });
       });
-    }),
-    get: (...params) => new Promise((resolve, reject) => {
-      stmt.get(...params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    }),
-    all: (...params) => new Promise((resolve, reject) => {
-      stmt.all(...params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    }),
-    finalize: () => new Promise((resolve, reject) => {
-      stmt.finalize((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    })
+    }
   };
+  
+  const statementWrapper = {
+    run: async (...params) => {
+      try {
+        return await new Promise((resolve, reject) => {
+          stmt.run(...params, function(err) {
+            if (err) reject(err);
+            else resolve({ lastInsertRowid: this.lastID, changes: this.changes });
+          });
+        });
+      } catch (error) {
+        // No finalizar aquí, dejar que el código lo haga explícitamente
+        throw error;
+      }
+    },
+    get: async (...params) => {
+      try {
+        return await new Promise((resolve, reject) => {
+          stmt.get(...params, (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        });
+      } catch (error) {
+        throw error;
+      }
+    },
+    all: async (...params) => {
+      try {
+        return await new Promise((resolve, reject) => {
+          stmt.all(...params, (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows);
+          });
+        });
+      } catch (error) {
+        throw error;
+      }
+    },
+    finalize: safeFinalize,
+    // Método para usar con try/finally automático
+    withAutoFinalize: async (fn) => {
+      try {
+        return await fn(statementWrapper);
+      } finally {
+        await safeFinalize();
+      }
+    }
+  };
+  
+  return statementWrapper;
 }
 
 export default db;

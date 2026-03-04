@@ -26,6 +26,10 @@ const router = express.Router();
  *    - Insertar en BD
  */
 router.post('/syncDB', async (req, res) => {
+  let dbUUIDsStmt = null;
+  let insertStmt = null;
+  let deleteStmt = null;
+
   try {
     const { inicio = 'A', fin = 'G' } = req.query;
 
@@ -52,9 +56,10 @@ router.post('/syncDB', async (req, res) => {
     console.log(`📊 Separación: ${gastosConUUID.length} con UUID, ${gastosSinUUID.length} sin UUID`);
 
     // 3. Obtener todos los UUIDs de la base de datos
-    const dbUUIDsStmt = prepare('SELECT UUID FROM TRANSACTIONS');
+    dbUUIDsStmt = prepare('SELECT UUID FROM TRANSACTIONS');
     const dbUUIDsRows = await dbUUIDsStmt.all();
     await dbUUIDsStmt.finalize();
+    dbUUIDsStmt = null; // Marcar como finalizado
     const dbUUIDs = new Set(dbUUIDsRows.map(row => row.UUID).filter(uuid => uuid && uuid.trim() !== ''));
 
     console.log(`📊 UUIDs en BD: ${dbUUIDs.size}`);
@@ -71,14 +76,14 @@ router.post('/syncDB', async (req, res) => {
     console.log(`📊 UUIDs para insertar: ${uuidsParaInsertar.length}, UUIDs para eliminar: ${uuidsParaEliminar.length}`);
 
     // Preparar statements
-    const insertStmt = prepare(`
+    insertStmt = prepare(`
       INSERT INTO TRANSACTIONS (
         UUID, DATETIME, YEAR, MONTH, TYPE, AMOUNT, CURRENCY, 
         CATEGORY, DESCRIPTION, AFFECTS_LIQUIDITY
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const deleteStmt = prepare('DELETE FROM TRANSACTIONS WHERE UUID = ?');
+    deleteStmt = prepare('DELETE FROM TRANSACTIONS WHERE UUID = ?');
 
     let inserted = 0;
     let deleted = 0;
@@ -177,8 +182,15 @@ router.post('/syncDB', async (req, res) => {
       }
     }
 
-    await insertStmt.finalize();
-    await deleteStmt.finalize();
+    // Finalizar statements antes de enviar respuesta
+    if (insertStmt) {
+      await insertStmt.finalize();
+      insertStmt = null;
+    }
+    if (deleteStmt) {
+      await deleteStmt.finalize();
+      deleteStmt = null;
+    }
 
     console.log(`✅ Sincronización completada: ${inserted} insertados, ${deleted} eliminados, ${generated} UUIDs generados, ${errors} errores`);
 
@@ -203,6 +215,16 @@ router.post('/syncDB', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error sincronizando base de datos:', error);
+    
+    // Asegurar que los statements se finalicen incluso si hay error
+    try {
+      if (dbUUIDsStmt) await dbUUIDsStmt.finalize();
+      if (insertStmt) await insertStmt.finalize();
+      if (deleteStmt) await deleteStmt.finalize();
+    } catch (finalizeError) {
+      console.error('❌ Error finalizando statements:', finalizeError);
+    }
+    
     res.status(500).json({
       error: {
         code: 'ERROR_SYNC_DB',

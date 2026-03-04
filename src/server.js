@@ -36,7 +36,30 @@ app.use((req, res, next) => {
 });
 
 // Middleware para parsear JSON
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
+// Middleware de timeout para peticiones (30 segundos)
+app.use((req, res, next) => {
+  const timeout = setTimeout(() => {
+    if (!res.headersSent) {
+      res.status(504).json({
+        error: {
+          code: 'TIMEOUT',
+          message: 'La petición excedió el tiempo máximo de espera'
+        }
+      });
+    }
+  }, 30000); // 30 segundos
+
+  // Limpiar timeout cuando la respuesta se envía
+  const originalEnd = res.end;
+  res.end = function(...args) {
+    clearTimeout(timeout);
+    originalEnd.apply(this, args);
+  };
+
+  next();
+});
 
 // Middleware de logging simple
 app.use((req, res, next) => {
@@ -66,14 +89,23 @@ app.use('/resumes', resumesRouter);
 app.use('/patrimonio', patrimonioRouter);
 app.use('/cedears', cedearsRouter);
 
-// Middleware de manejo de errores
+// Middleware de manejo de errores mejorado
 app.use((err, req, res, next) => {
   console.error('Error no manejado:', err);
-  res.status(500).json({
+  
+  // Si la respuesta ya fue enviada, solo loguear el error
+  if (res.headersSent) {
+    return next(err);
+  }
+  
+  // Determinar código de estado apropiado
+  const statusCode = err.statusCode || err.status || 500;
+  
+  res.status(statusCode).json({
     error: {
-      code: 'INTERNAL_ERROR',
-      message: 'Error interno del servidor',
-      details: err.message
+      code: err.code || 'INTERNAL_ERROR',
+      message: err.message || 'Error interno del servidor',
+      details: process.env.NODE_ENV === 'development' ? err.stack : err.message
     }
   });
 });
