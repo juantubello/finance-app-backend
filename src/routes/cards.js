@@ -470,6 +470,9 @@ function categorizarGasto(descripcion) {
  * - month: mes (requerido, 1-12)
  */
 router.get('/statements/categories', async (req, res) => {
+  let statementsStmt = null;
+  let itemsStmt = null;
+
   try {
     const { year, month } = req.query;
 
@@ -495,7 +498,7 @@ router.get('/statements/categories', async (req, res) => {
     }
 
     // Obtener statements del mes/año
-    const statementsStmt = prepare(`
+    statementsStmt = prepare(`
       SELECT UUID
       FROM CARD_STATEMENTS
       WHERE YEAR = ? AND MONTH = ?
@@ -503,6 +506,7 @@ router.get('/statements/categories', async (req, res) => {
 
     const statements = await statementsStmt.all(yearInt, monthInt);
     await statementsStmt.finalize();
+    statementsStmt = null;
 
     if (statements.length === 0) {
       return res.json({
@@ -516,7 +520,7 @@ router.get('/statements/categories', async (req, res) => {
     const statementUuids = statements.map(s => s.UUID);
     const placeholders = statementUuids.map(() => '?').join(',');
     
-    const itemsStmt = prepare(`
+    itemsStmt = prepare(`
       SELECT 
         AMOUNT_ARS, DESCRIPTION
       FROM CARD_STATEMENT_ITEMS
@@ -525,6 +529,7 @@ router.get('/statements/categories', async (req, res) => {
 
     const items = await itemsStmt.all(...statementUuids);
     await itemsStmt.finalize();
+    itemsStmt = null;
 
     // Agrupar por categoría
     const categorias = {};
@@ -555,6 +560,17 @@ router.get('/statements/categories', async (req, res) => {
       categories: categoriasArray
     });
   } catch (err) {
+    // Asegurar que todos los statements se finalicen incluso si hay error
+    const statements = [statementsStmt, itemsStmt];
+    for (const stmt of statements) {
+      if (stmt) {
+        try {
+          await stmt.finalize();
+        } catch (finalizeErr) {
+          console.error('Error finalizando statement:', finalizeErr);
+        }
+      }
+    }
     console.error('Error en GET /cards/statements/categories:', err);
     res.status(500).json({
       error: {
@@ -576,6 +592,7 @@ router.get('/statements/categories', async (req, res) => {
  * Devuelve el tipo de cambio si existe, o null si no hay registro
  */
 router.get('/payment-fx', async (req, res) => {
+  let paymentFxStmt = null;
   try {
     const { year, month } = req.query;
 
@@ -601,13 +618,14 @@ router.get('/payment-fx', async (req, res) => {
     }
 
     // Buscar si existe un tipo de cambio guardado para este mes/año
-    const paymentFxStmt = prepare(`
+    paymentFxStmt = prepare(`
       SELECT CONVERSION_AMOUNT, DATETIME
       FROM CARD_PAYMENT_FX
       WHERE YEAR = ? AND MONTH = ?
     `);
     const paymentFx = await paymentFxStmt.get(yearInt, monthInt);
     await paymentFxStmt.finalize();
+    paymentFxStmt = null;
 
     if (!paymentFx) {
       return res.json({
@@ -631,6 +649,14 @@ router.get('/payment-fx', async (req, res) => {
       exists: true
     });
   } catch (err) {
+    // Asegurar que el statement se finalice incluso si hay error
+    if (paymentFxStmt) {
+      try {
+        await paymentFxStmt.finalize();
+      } catch (finalizeErr) {
+        console.error('Error finalizando statement:', finalizeErr);
+      }
+    }
     console.error('Error en GET /cards/payment-fx:', err);
     res.status(500).json({
       error: {

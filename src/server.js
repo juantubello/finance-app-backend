@@ -80,16 +80,42 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware de logging simple
+// Middleware de logging mejorado con tracking de peticiones activas
+let activeRequests = 0;
+let maxConcurrentRequests = 0;
+
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${req.method} ${req.path}`);
+  activeRequests++;
+  maxConcurrentRequests = Math.max(maxConcurrentRequests, activeRequests);
+  
+  // Log si hay muchas peticiones concurrentes
+  if (activeRequests > 50) {
+    console.warn(`⚠️  Alto número de peticiones concurrentes: ${activeRequests}`);
+  }
+  
+  console.log(`[${timestamp}] ${req.method} ${req.path} [Activas: ${activeRequests}]`);
+  
+  // Limpiar contador cuando la respuesta termina
+  res.on('finish', () => {
+    activeRequests--;
+  });
+  
+  res.on('close', () => {
+    activeRequests--;
+  });
+  
   next();
 });
 
-// Health check
+// Health check mejorado
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ 
+    status: 'ok',
+    active_requests: activeRequests,
+    max_concurrent_requests: maxConcurrentRequests,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Rutas
